@@ -1,6 +1,6 @@
 playwright>=1.40.0
 pytz
 PyGithub
-notion-client
+notion-client==1.0.0
 requests
 python-dotenv
