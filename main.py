@@ -150,9 +150,33 @@ def capture_screenshot(page_url: str, filename: str) -> bool:
             pass
         return False
 
+def scrape_heatmap() -> Optional[str]:
+    """
+    抓取清算热力图 (1M) 并保存为本地文件，返回文件路径。
+    """
+    today = get_today_beijing()
+    filename = f"{today}_BTC_清算热力图_1M.png"
+    success = capture_screenshot(HEATMAP_URL, filename)
+    if success:
+        return filename
+    else:
+        return None
+
+def scrape_liquidation_map() -> Optional[str]:
+    """
+    抓取 CoinAnk 1W 周期清算图并保存为本地文件，返回文件路径。
+    """
+    today = get_today_beijing()
+    filename = f"{today}_BTC_全网聚合清算_1W.png"
+    success = capture_screenshot(AGGREGATE_URL, filename)
+    if success:
+        return filename
+    else:
+        return None
+
 def upload_to_github(file_path: str, repo_name: str, token: str) -> Optional[str]:
     """
-    将文件上传到 GitHub 仓库的 images/ 目录下，返回 raw 链接。
+    将文件上传到 GitHub 仓库的 images/YYYY-MM/ 目录下，返回 raw 链接。
     """
     if not token:
         logger.error("GitHub Token 未提供，跳过上传")
@@ -162,16 +186,19 @@ def upload_to_github(file_path: str, repo_name: str, token: str) -> Optional[str
         repo = gh.get_repo(repo_name)
         with open(file_path, 'rb') as f:
             content = f.read()
-        # 构造仓库中的路径
-        today = datetime.datetime.now().strftime('%Y-%m-%d')
-        remote_path = f"images/{today}_{os.path.basename(file_path)}"
+        # 构造仓库中的路径，按年月组织
+        tz = pytz.timezone('Asia/Shanghai')
+        now = datetime.datetime.now(tz)
+        year_month = now.strftime('%Y-%m')
+        filename = os.path.basename(file_path)
+        remote_path = f"images/{year_month}/{filename}"
         # 检查文件是否存在，若存在则更新
         try:
             existing = repo.get_contents(remote_path)
-            repo.update_file(remote_path, f"Update {today}", content, existing.sha)
+            repo.update_file(remote_path, f"Update {now.date()}", content, existing.sha)
             logger.info(f"已更新 GitHub 文件: {remote_path}")
         except:
-            repo.create_file(remote_path, f"Add {today}", content)
+            repo.create_file(remote_path, f"Add {now.date()}", content)
             logger.info(f"已创建 GitHub 文件: {remote_path}")
         # 生成 raw 链接
         raw_url = f"https://raw.githubusercontent.com/{repo_name}/main/{remote_path}"
@@ -228,6 +255,27 @@ def update_notion_page(notion_token: str, page_id: str, heatmap_url: str, aggreg
         logger.info(f"Notion 页面更新成功，属性: {list(properties.keys())}")
     except APIError as e:
         logger.error(f"Notion 更新失败: {e}")
+
+def sync_to_notion(heatmap_url: str, liq_map_url: str) -> bool:
+    """
+    同步两个图片 URL 到 Notion 数据库的今日页面。
+    使用环境变量 NOTION_TOKEN 和 NOTION_DB_ID。
+    返回成功与否。
+    """
+    if not NOTION_TOKEN or not NOTION_DB_ID:
+        logger.warning("未提供 Notion Token 或 Database ID，跳过 Notion 同步")
+        return False
+    page_id = get_today_notion_page(NOTION_TOKEN, NOTION_DB_ID)
+    if not page_id:
+        logger.warning("未找到今天的 Notion 页面，跳过同步")
+        return False
+    try:
+        update_notion_page(NOTION_TOKEN, page_id, heatmap_url, liq_map_url)
+        logger.info("Notion 同步成功")
+        return True
+    except Exception as e:
+        logger.error(f"Notion 同步失败: {e}")
+        return False
 
 def main():
     logger.info("=== CoinAnk 自动抓取脚本开始 ===")
