@@ -279,40 +279,41 @@ def sync_to_notion(heatmap_url: str, liq_map_url: str) -> bool:
 
 def main():
     logger.info("=== CoinAnk 自动抓取脚本开始 ===")
-    today = get_today_beijing()
-    logger.info(f"今日北京时间: {today}")
 
     # 1. 抓取两个截图
-    heatmap_filename = f"{today}_BTC_清算热力图_1M.png"
-    aggregate_filename = f"{today}_BTC_全网聚合清算_1W.png"
+    heatmap_file = scrape_heatmap()
+    liq_map_file = scrape_liquidation_map()
 
-    heatmap_success = capture_screenshot(HEATMAP_URL, heatmap_filename)
-    aggregate_success = capture_screenshot(AGGREGATE_URL, aggregate_filename)
-
-    if not heatmap_success and not aggregate_success:
+    if not heatmap_file and not liq_map_file:
         logger.error("两个截图均抓取失败，脚本终止")
         return
 
     # 2. 上传到 GitHub
-    heatmap_raw = None
-    aggregate_raw = None
+    heatmap_url = None
+    liq_map_url = None
     if GITHUB_TOKEN:
-        if heatmap_success:
-            heatmap_raw = upload_to_github(heatmap_filename, GITHUB_REPO, GITHUB_TOKEN)
-        if aggregate_success:
-            aggregate_raw = upload_to_github(aggregate_filename, GITHUB_REPO, GITHUB_TOKEN)
+        if heatmap_file:
+            heatmap_url = upload_to_github(heatmap_file, GITHUB_REPO, GITHUB_TOKEN)
+        if liq_map_file:
+            liq_map_url = upload_to_github(liq_map_file, GITHUB_REPO, GITHUB_TOKEN)
     else:
         logger.warning("未提供 GitHub Token，跳过上传步骤")
 
-    # 3. 更新 Notion
-    if NOTION_TOKEN and NOTION_DB_ID:
-        page_id = get_today_notion_page(NOTION_TOKEN, NOTION_DB_ID)
-        if page_id:
-            update_notion_page(NOTION_TOKEN, page_id, heatmap_raw, aggregate_raw)
-        else:
-            logger.warning("未找到今天的 Notion 页面，跳过更新")
+    # 3. 同步到 Notion
+    sync_success = False
+    if heatmap_url or liq_map_url:
+        sync_success = sync_to_notion(heatmap_url, liq_map_url)
     else:
-        logger.warning("未提供 Notion Token 或 Database ID，跳过 Notion 更新")
+        logger.warning("没有可用的图片 URL，跳过 Notion 同步")
+
+    # 4. 清理本地临时文件
+    for file_path in [heatmap_file, liq_map_file]:
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                logger.info(f"已删除本地文件: {file_path}")
+            except Exception as e:
+                logger.warning(f"删除本地文件失败 {file_path}: {e}")
 
     logger.info("=== 脚本执行完成 ===")
 
