@@ -1,0 +1,25 @@
+# 图片文件
+*.png
+*.jpg
+*.jpeg
+*.gif
+
+# 日志文件
+*.log
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虚拟环境
+.env
+venv/
+env/
+
+# 下载文件
+*.download
+
+# 系统文件
+.DS_Store
+Thumbs.db
