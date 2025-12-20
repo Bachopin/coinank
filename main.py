@@ -15,6 +15,10 @@ from playwright.sync_api import sync_playwright, Browser, Page
 from github import Github, GithubException
 from notion_client import Client as NotionClient
 from notion_client.errors import APIResponseError
+from dotenv import load_dotenv
+
+# 加载本地 .env 文件
+load_dotenv()
 
 # 日志配置
 logging.basicConfig(
@@ -32,6 +36,7 @@ GITHUB_TOKEN = os.getenv('GITHUB_TOKEN', '')  # 请设置环境变量
 GITHUB_REPO = os.getenv('GITHUB_REPO', 'Bachopin/coinank')
 NOTION_TOKEN = os.getenv('NOTION_TOKEN', '')
 NOTION_DB_ID = os.getenv('NOTION_DB_ID', '')
+logger.info(f"环境变量加载情况: GITHUB_TOKEN={'***' if GITHUB_TOKEN else '空'}, NOTION_TOKEN={'***' if NOTION_TOKEN else '空'}")
 
 # 截图 URL 与文件名模板
 HEATMAP_URL = "https://coinank.com/zh/chart/derivatives/liq-heat-map/btcusdt/1M"

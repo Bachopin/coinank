@@ -3,3 +3,4 @@ pytz
 PyGithub
 notion-client
 requests
+python-dotenv
