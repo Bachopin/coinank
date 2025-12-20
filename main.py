@@ -214,24 +214,25 @@ def upload_to_github(file_path: str, repo_name: str, token: str) -> Optional[str
 
 def get_today_notion_page(notion_token: str, db_id: str) -> Optional[str]:
     """
-    查询 Notion 数据库中 Created_Date 为今天（北京时间）的页面，返回页面 ID。
+    查询 Notion 数据库中 isToday 公式属性为 True（即今天）的页面，返回页面 ID。
     """
     try:
         notion = NotionClient(auth=notion_token)
-        today = get_today_beijing()
-        logger.info(f"查询 Notion 数据库，Created_Date = {today}")
+        logger.info("正在查询 isToday 为 True 的页面...")
         response = notion.databases.query(
             database_id=db_id,
             filter={
-                "property": "Created_Date",
-                "date": {
-                    "equals": today
+                "property": "isToday",
+                "formula": {
+                    "checkbox": {
+                        "equals": True
+                    }
                 }
             }
         )
         results = response.get('results', [])
         if len(results) == 0:
-            logger.warning(f"未找到今天（{today}）的 Notion 页面")
+            logger.warning("未找到 isToday 为 True 的 Notion 页面")
             return None
         page = results[0]
         page_id = page['id']
@@ -249,9 +250,25 @@ def update_notion_page(notion_token: str, page_id: str, heatmap_url: str, aggreg
         notion = NotionClient(auth=notion_token)
         properties = {}
         if heatmap_url:
-            properties["数据图"] = {"url": heatmap_url}
+            properties["数据图"] = {
+                "files": [
+                    {
+                        "type": "external",
+                        "name": "Heatmap.png",
+                        "external": {"url": heatmap_url}
+                    }
+                ]
+            }
         if aggregate_url:
-            properties["清算地图"] = {"url": aggregate_url}
+            properties["清算地图"] = {
+                "files": [
+                    {
+                        "type": "external",
+                        "name": "Aggregate.png",
+                        "external": {"url": aggregate_url}
+                    }
+                ]
+            }
         if not properties:
             logger.warning("没有可更新的属性，跳过 Notion 更新")
             return
