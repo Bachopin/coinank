@@ -70,6 +70,52 @@ python main.py
 - 若页面结构发生变化，可能需要调整元素选择器
 - 下载的截图保存在脚本所在目录，请确保有写入权限
 
+## 高级功能（最终版）
+
+- **双图抓取**：同时抓取 BTC 清算热力图（1M）和全网聚合清算图（1W）。
+- **GitHub 自动上传**：将截图上传至 `Bachopin/coinank` 仓库的 `images/` 目录，并生成 raw 链接。
+- **Notion 自动更新**：查询当天创建的 Notion 页面，更新“数据图”和“清算地图”属性。
+- **时区感知**：使用北京时间（Asia/Shanghai）确定今日日期，确保与 Notion 数据库匹配。
+
+### 配置说明
+
+1. 环境变量（可选）：
+   - `GITHUB_TOKEN`：GitHub 个人访问令牌，用于上传截图。
+2. 硬编码配置（已在 `main.py` 中设置）：
+   - `NOTION_TOKEN` 和 `NOTION_DB_ID` 已填写。
+   - `GITHUB_REPO` 已设置为 `"Bachopin/coinank"`。
+
+### 定时任务（Mac Crontab）
+
+每日早上 7:00 自动运行：
+1. 确保 `run_daily.sh` 具有可执行权限。
+2. 使用 `crontab -e` 添加行：
+   ```
+   0 7 * * * /Users/mextrel/VSCode/Coinank/run_daily.sh
+   ```
+3. 详细设置请参阅 [crontab_setup.md](crontab_setup.md)。
+
+### 依赖扩展
+
+更新后的 `requirements.txt` 包含以下包：
+- `playwright`
+- `pytz`
+- `PyGithub`
+- `notion-client`
+- `requests`
+
+安装所有依赖：
+```bash
+pip install -r requirements.txt
+playwright install chromium
+```
+
+### 日志与排错
+
+- 脚本运行时日志同时输出到控制台和 `runtime.log` 文件。
+- 若截图失败，会在当前目录生成 `error_*.png` 快照。
+- 定时任务执行情况可通过 `runtime.log` 查看。
+
 ## 许可证
 
 MIT

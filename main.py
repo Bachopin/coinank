@@ -1,135 +1,119 @@
 #!/usr/bin/env python3
 """
-CoinAnk 比特币清算热力图抓取脚本（通过官方相机按钮下载高清截图）
-目标网址：https://coinank.com/zh/chart/derivatives/liq-heat-map/btcusdt/1M
-使用 Playwright (sync_api) 监听下载事件
+CoinAnk 比特币清算热力图 + 聚合图抓取脚本（最终版）
+抓取两个截图并上传到 GitHub，然后更新 Notion 页面。
 """
 
 import logging
+import os
 import datetime
-from playwright.sync_api import sync_playwright
+import sys
+from typing import Optional, Tuple
+
+import pytz
+from playwright.sync_api import sync_playwright, Browser, Page
+from github import Github, GithubException
+from notion_client import Client as NotionClient
+from notion_client.api_endpoints import databases
+from notion_client.errors import APIError
 
 # 日志配置
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('runtime.log', encoding='utf-8')
+    ]
 )
 logger = logging.getLogger(__name__)
 
-# 常量定义
-URL = "https://coinank.com/zh/chart/derivatives/liq-map/binance/btcusdt/1w"
-DOWNLOAD_FILENAME = f"{datetime.datetime.now().strftime('%Y-%m-%d')}_BTC_全网聚合清算_1W.png"
+# 配置常量（硬编码或环境变量）
+GITHUB_TOKEN = os.getenv('GITHUB_TOKEN', '')  # 请设置环境变量
+GITHUB_REPO = os.getenv('GITHUB_REPO', 'Bachopin/coinank')
+NOTION_TOKEN = os.getenv('NOTION_TOKEN', '')
+NOTION_DB_ID = os.getenv('NOTION_DB_ID', '')
+
+# 截图 URL 与文件名模板
+HEATMAP_URL = "https://coinank.com/zh/chart/derivatives/liq-heat-map/btcusdt/1M"
+AGGREGATE_URL = "https://coinank.com/zh/chart/derivatives/liq-map/binance/btcusdt/1w"
 VIEWPORT = {'width': 1920, 'height': 1200}
 WAIT_TIME_MS = 15000  # 15秒
 
-# 最新 Chrome 用户代理
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/120.0.0.0 Safari/537.36"
-)
-
-# 相机按钮选择器（根据探索结果）
+# 相机按钮选择器
 CAMERA_BUTTON_SELECTOR = ".anticon.anticon-camera"
 
-def main():
-    logger.info("开始抓取比特币清算热力图（通过官方相机按钮下载）...")
-    
-    with sync_playwright() as p:
-        # 启动浏览器，添加反检测参数
-        browser = p.chromium.launch(
-            headless=False,
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--disable-dev-shm-usage',
-                '--no-sandbox',
-                f'--user-agent={USER_AGENT}',
-            ]
-        )
-        
-        # 创建页面并设置视口
-        page = browser.new_page(viewport=VIEWPORT)
-        logger.info(f"视口设置为: {VIEWPORT}")
-        
-        try:
-            # 导航到目标页面
-            logger.info(f"正在访问: {URL}")
-            page.goto(URL, timeout=60000)  # 60秒超时
+def get_today_beijing() -> str:
+    """返回北京时间的今日日期字符串 YYYY-MM-DD"""
+    tz = pytz.timezone('Asia/Shanghai')
+    now = datetime.datetime.now(tz)
+    return now.strftime('%Y-%m-%d')
+
+def capture_screenshot(page_url: str, filename: str) -> bool:
+    """
+    使用 Playwright 访问 page_url，点击相机按钮下载截图，保存为 filename。
+    返回成功与否。
+    """
+    logger.info(f"开始抓取截图: {page_url}")
+    try:
+        with sync_playwright() as p:
+            browser: Browser = p.chromium.launch(
+                headless=False,  # 可视模式便于调试，cron运行时改为 True
+                args=[
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-dev-shm-usage',
+                    '--no-sandbox',
+                ]
+            )
+            page: Page = browser.new_page(viewport=VIEWPORT)
+            logger.info(f"访问页面: {page_url}")
+            page.goto(page_url, timeout=60000)
             logger.info("页面加载完成，等待图表渲染...")
-            
-            # 强制等待15秒，确保Canvas/SVG完全渲染
             page.wait_for_timeout(WAIT_TIME_MS)
-            logger.info(f"已等待 {WAIT_TIME_MS/1000} 秒")
-            
+
             # 定位下方图表容器（通过时间选择器文本“1d”）
-            logger.info("定位下方图表容器...")
-            # 找到所有时间选择器
             all_time_selectors = page.locator(".ant-select-selector")
             target_selector = None
             for i in range(all_time_selectors.count()):
                 txt = all_time_selectors.nth(i).text_content().strip()
-                logger.info(f"时间选择器 {i}: text='{txt}'")
                 if txt == '1d':
                     target_selector = all_time_selectors.nth(i)
                     break
             if target_selector is None:
-                # 如果没有找到1d，假设第二个时间选择器是下方图表
-                logger.warning("未找到显示为 '1d' 的时间选择器，使用第二个时间选择器")
                 if all_time_selectors.count() >= 2:
                     target_selector = all_time_selectors.nth(1)
                 else:
                     target_selector = all_time_selectors.first
-            # 向上两层获取图表容器
             chart_container = target_selector.locator("..").locator("..")
             logger.info("已定位下方图表容器")
-            
-            # 打印容器文本以便调试
-            container_text = chart_container.text_content()
-            logger.info(f"容器文本预览: {container_text[:200]}...")
-            
-            # 在容器内找到当前显示为 '1d' 的时间选择器
-            logger.info("查找时间选择器...")
-            # 使用之前找到的目标时间选择器
-            target_selector.click()
-            logger.info("已点击时间选择器")
-            
-            # 等待下拉菜单出现
-            page.wait_for_timeout(1000)
-            # 选择 '1w' 选项
-            logger.info("选择 '1w' 选项...")
-            dropdown_item = page.locator(".ant-select-dropdown .ant-select-item[title='1w']")
-            if dropdown_item.count() == 0:
-                # 备用选择器：包含文本 '1w' 的项
-                dropdown_item = page.locator("text=1w").last
-            dropdown_item.click()
-            logger.info("已切换到 1w 周期")
-            
-            # 等待图表刷新（5-8秒）
-            logger.info("等待图表数据刷新...")
-            page.wait_for_timeout(8000)
-            
-            # 滚动使图表区域可见（可选，确保相机按钮在视窗内）
+
+            # 在容器内找到时间选择器并切换到 1w（如果是聚合图）或保持 1M（热图）
+            # 根据 URL 判断需要切换的周期
+            if 'liq-map' in page_url:
+                logger.info("聚合图页面，切换到 1w 周期")
+                target_selector.click()
+                page.wait_for_timeout(1000)
+                dropdown_item = page.locator(".ant-select-dropdown .ant-select-item[title='1w']")
+                if dropdown_item.count() == 0:
+                    dropdown_item = page.locator("text=1w").last
+                dropdown_item.click()
+                logger.info("已切换到 1w 周期")
+                page.wait_for_timeout(8000)
+            else:
+                logger.info("热图页面，保持 1M 周期，无需切换")
+
+            # 滚动使图表区域可见
             page.evaluate("window.scrollTo(0, document.body.scrollHeight / 3)")
-            logger.info("已执行滚动操作，使图表区域可见")
-            
-            # 等待滚动后的短暂稳定
             page.wait_for_timeout(2000)
-            
-            # 使用 expect_download 上下文管理器监听下载事件
-            logger.info("准备点击相机按钮并监听下载...")
+
+            # 点击相机按钮并监听下载
             with page.expect_download() as download_info:
-                # 在下方图表容器内点击相机按钮
                 camera_button = chart_container.locator(".anticon.anticon-camera")
                 if camera_button.count() > 0:
                     camera_button.click()
-                    logger.info("已点击下方图表区域的相机按钮")
+                    logger.info("已点击相机按钮")
                 else:
-                    # 如果选择器不可见，尝试其他选择器
-                    logger.warning("相机按钮不可见，尝试备用选择器")
-                    # 调试：打印容器文本内容
-                    container_text = chart_container.text_content()
-                    logger.info(f"容器文本内容（前500字符）: {container_text[:500]}")
-                    # 备用选择器：包含 camera 类名的任何元素
+                    # 备用选择器
                     alt_selectors = [
                         '[class*="camera"]',
                         '[class*="download"]',
@@ -145,43 +129,144 @@ def main():
                             clicked = True
                             break
                     if not clicked:
-                        # 如果容器内找不到，尝试全局查找（降级）
-                        logger.warning("容器内未找到相机按钮，尝试全局查找")
                         if page.is_visible(CAMERA_BUTTON_SELECTOR):
                             page.click(CAMERA_BUTTON_SELECTOR)
                             logger.info("已点击全局相机按钮")
                         else:
                             raise Exception("未找到可点击的相机按钮")
-            
-            # 获取下载对象
+
             download = download_info.value
             logger.info(f"下载开始: {download.suggested_filename}")
-            
-            # 等待下载完成并保存到指定文件名
-            download.save_as(DOWNLOAD_FILENAME)
-            logger.info(f"高清截图已保存为: {DOWNLOAD_FILENAME}")
-            
-            # 打印最终保存路径（绝对路径）
-            import os
-            abs_path = os.path.abspath(DOWNLOAD_FILENAME)
-            logger.info(f"文件保存路径: {abs_path}")
-            
-        except Exception as e:
-            logger.error(f"抓取过程中出现错误: {e}")
-            # 若出错，尝试截取当前页面状态
-            try:
-                page.screenshot(path="error_snapshot.png")
-                logger.info("错误状态已保存至 error_snapshot.png")
-            except:
-                pass
-            raise
-        
-        finally:
-            # 关闭浏览器
+            download.save_as(filename)
+            logger.info(f"截图已保存为: {filename}")
             browser.close()
-            logger.info("浏览器已关闭")
-    
-    logger.info("脚本执行完毕")
+            return True
+    except Exception as e:
+        logger.error(f"抓取截图失败: {e}")
+        # 如果出错，尝试截取页面快照
+        try:
+            page.screenshot(path=f"error_{os.path.basename(filename)}.png")
+        except:
+            pass
+        return False
+
+def upload_to_github(file_path: str, repo_name: str, token: str) -> Optional[str]:
+    """
+    将文件上传到 GitHub 仓库的 images/ 目录下，返回 raw 链接。
+    """
+    if not token:
+        logger.error("GitHub Token 未提供，跳过上传")
+        return None
+    try:
+        gh = Github(token)
+        repo = gh.get_repo(repo_name)
+        with open(file_path, 'rb') as f:
+            content = f.read()
+        # 构造仓库中的路径
+        today = datetime.datetime.now().strftime('%Y-%m-%d')
+        remote_path = f"images/{today}_{os.path.basename(file_path)}"
+        # 检查文件是否存在，若存在则更新
+        try:
+            existing = repo.get_contents(remote_path)
+            repo.update_file(remote_path, f"Update {today}", content, existing.sha)
+            logger.info(f"已更新 GitHub 文件: {remote_path}")
+        except:
+            repo.create_file(remote_path, f"Add {today}", content)
+            logger.info(f"已创建 GitHub 文件: {remote_path}")
+        # 生成 raw 链接
+        raw_url = f"https://raw.githubusercontent.com/{repo_name}/main/{remote_path}"
+        logger.info(f"Raw URL: {raw_url}")
+        return raw_url
+    except GithubException as e:
+        logger.error(f"GitHub 上传失败: {e}")
+        return None
+
+def get_today_notion_page(notion_token: str, db_id: str) -> Optional[str]:
+    """
+    查询 Notion 数据库中 Created_Date 为今天（北京时间）的页面，返回页面 ID。
+    """
+    try:
+        notion = NotionClient(auth=notion_token)
+        today = get_today_beijing()
+        logger.info(f"查询 Notion 数据库，Created_Date = {today}")
+        response = notion.databases.query(
+            database_id=db_id,
+            filter={
+                "property": "Created_Date",
+                "date": {
+                    "equals": today
+                }
+            }
+        )
+        results = response.get('results', [])
+        if len(results) == 0:
+            logger.warning(f"未找到今天（{today}）的 Notion 页面")
+            return None
+        page = results[0]
+        page_id = page['id']
+        logger.info(f"找到 Notion 页面: {page_id}")
+        return page_id
+    except APIError as e:
+        logger.error(f"Notion 查询失败: {e}")
+        return None
+
+def update_notion_page(notion_token: str, page_id: str, heatmap_url: str, aggregate_url: str):
+    """
+    更新 Notion 页面的“数据图”和“清算地图”属性。
+    """
+    try:
+        notion = NotionClient(auth=notion_token)
+        properties = {}
+        if heatmap_url:
+            properties["数据图"] = {"url": heatmap_url}
+        if aggregate_url:
+            properties["清算地图"] = {"url": aggregate_url}
+        if not properties:
+            logger.warning("没有可更新的属性，跳过 Notion 更新")
+            return
+        notion.pages.update(page_id=page_id, properties=properties)
+        logger.info(f"Notion 页面更新成功，属性: {list(properties.keys())}")
+    except APIError as e:
+        logger.error(f"Notion 更新失败: {e}")
+
+def main():
+    logger.info("=== CoinAnk 自动抓取脚本开始 ===")
+    today = get_today_beijing()
+    logger.info(f"今日北京时间: {today}")
+
+    # 1. 抓取两个截图
+    heatmap_filename = f"{today}_BTC_清算热力图_1M.png"
+    aggregate_filename = f"{today}_BTC_全网聚合清算_1W.png"
+
+    heatmap_success = capture_screenshot(HEATMAP_URL, heatmap_filename)
+    aggregate_success = capture_screenshot(AGGREGATE_URL, aggregate_filename)
+
+    if not heatmap_success and not aggregate_success:
+        logger.error("两个截图均抓取失败，脚本终止")
+        return
+
+    # 2. 上传到 GitHub
+    heatmap_raw = None
+    aggregate_raw = None
+    if GITHUB_TOKEN:
+        if heatmap_success:
+            heatmap_raw = upload_to_github(heatmap_filename, GITHUB_REPO, GITHUB_TOKEN)
+        if aggregate_success:
+            aggregate_raw = upload_to_github(aggregate_filename, GITHUB_REPO, GITHUB_TOKEN)
+    else:
+        logger.warning("未提供 GitHub Token，跳过上传步骤")
+
+    # 3. 更新 Notion
+    if NOTION_TOKEN and NOTION_DB_ID:
+        page_id = get_today_notion_page(NOTION_TOKEN, NOTION_DB_ID)
+        if page_id:
+            update_notion_page(NOTION_TOKEN, page_id, heatmap_raw, aggregate_raw)
+        else:
+            logger.warning("未找到今天的 Notion 页面，跳过更新")
+    else:
+        logger.warning("未提供 Notion Token 或 Database ID，跳过 Notion 更新")
+
+    logger.info("=== 脚本执行完成 ===")
 
 if __name__ == "__main__":
     main()
