@@ -18,6 +18,11 @@ cd "$(dirname "$0")" || {
     exit 1
 }
 
+# 检查并激活虚拟环境
+if [ -d ".venv" ]; then
+    source .venv/bin/activate
+fi
+
 # 记录运行开始时间
 echo "=== 开始运行 $(date '+%Y-%m-%d %H:%M:%S') ===" >> run.log
 

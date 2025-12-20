@@ -14,8 +14,7 @@ import pytz
 from playwright.sync_api import sync_playwright, Browser, Page
 from github import Github, GithubException
 from notion_client import Client as NotionClient
-from notion_client.api_endpoints import databases
-from notion_client.errors import APIError
+from notion_client.errors import APIResponseError
 
 # 日志配置
 logging.basicConfig(
@@ -233,7 +232,7 @@ def get_today_notion_page(notion_token: str, db_id: str) -> Optional[str]:
         page_id = page['id']
         logger.info(f"找到 Notion 页面: {page_id}")
         return page_id
-    except APIError as e:
+    except APIResponseError as e:
         logger.error(f"Notion 查询失败: {e}")
         return None
 
@@ -253,7 +252,7 @@ def update_notion_page(notion_token: str, page_id: str, heatmap_url: str, aggreg
             return
         notion.pages.update(page_id=page_id, properties=properties)
         logger.info(f"Notion 页面更新成功，属性: {list(properties.keys())}")
-    except APIError as e:
+    except APIResponseError as e:
         logger.error(f"Notion 更新失败: {e}")
 
 def sync_to_notion(heatmap_url: str, liq_map_url: str) -> bool:
