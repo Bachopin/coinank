@@ -58,7 +58,7 @@ def capture_screenshot(page_url: str, filename: str) -> bool:
     try:
         with sync_playwright() as p:
             browser: Browser = p.chromium.launch(
-                headless=False,  # 可视模式便于调试，cron运行时改为 True
+                headless=True,  # 可视模式便于调试，cron运行时改为 True
                 args=[
                     '--disable-blink-features=AutomationControlled',
                     '--disable-dev-shm-usage',
@@ -89,7 +89,7 @@ def capture_screenshot(page_url: str, filename: str) -> bool:
 
             # 在容器内找到时间选择器并切换到 1w（如果是聚合图）或保持 1M（热图）
             # 根据 URL 判断需要切换的周期
-            if 'liq-map' in page_url:
+            if '/liq-map/' in page_url and 'heat-map' not in page_url:
                 logger.info("聚合图页面，切换到 1w 周期")
                 target_selector.click()
                 page.wait_for_timeout(1000)
