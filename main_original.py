@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CoinAnk 比特币清算热力图 + 聚合图抓取脚本（Mac 本地版 + 防重补跑机制）
+CoinAnk 比特币清算热力图 + 聚合图抓取脚本（服务器优化版）
 抓取两个截图并上传到 GitHub，然后更新 Notion 页面。
 """
 
@@ -23,18 +23,12 @@ from dotenv import load_dotenv
 SCRIPT_DIR = Path(__file__).parent.absolute()
 os.chdir(SCRIPT_DIR)
 
-# 防重补跑机制 - 锁文件
-LOCK_FILE = "daily_task.lock"
-
 # 加载本地 .env 文件
 load_dotenv(SCRIPT_DIR / '.env')
 
 # 创建日志目录
 LOG_DIR = SCRIPT_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
-
-# 检测运行环境
-IS_SERVER = platform.system() == 'Linux' or os.getenv('DISPLAY') is None
 
 # 日志配置 - 服务器友好
 logging.basicConfig(
@@ -47,9 +41,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 检测运行环境
+IS_SERVER = platform.system() == 'Linux' or os.getenv('DISPLAY') is None
 logger.info(f"运行环境: {platform.system()}, 服务器模式: {IS_SERVER}")
 
-# 配置常量（环境变量）
+# 配置常量（硬编码或环境变量）
 GITHUB_TOKEN = os.getenv('GITHUB_TOKEN', '')
 GITHUB_REPO = os.getenv('GITHUB_REPO', 'Bachopin/coinank')
 NOTION_TOKEN = os.getenv('NOTION_TOKEN', '')
@@ -84,6 +80,7 @@ BROWSER_ARGS = [
     '--disable-gpu',
     '--disable-web-security',
     '--disable-features=VizDisplayCompositor',
+    '--single-process',  # 服务器环境下减少进程数
 ]
 
 # 服务器环境额外参数
@@ -94,7 +91,6 @@ if IS_SERVER:
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
-        '--single-process',  # 服务器环境下减少进程数
     ])
 
 # 相机按钮选择器
@@ -106,93 +102,41 @@ def get_today_beijing() -> str:
     now = datetime.datetime.now(tz)
     return now.strftime('%Y-%m-%d')
 
-def check_if_done_today():
-    """
-    检查今日任务是否已完成
-    如果已完成，直接退出脚本
-    """
-    today = get_today_beijing()
-    lock_file_path = SCRIPT_DIR / LOCK_FILE
-    
-    try:
-        if lock_file_path.exists():
-            with open(lock_file_path, 'r', encoding='utf-8') as f:
-                last_run_date = f.read().strip()
-            
-            if last_run_date == today:
-                logger.info("✅ 今日任务已完成，无需重复执行")
-                sys.exit(0)
-            else:
-                logger.info(f"🚀 今日尚未执行，开始运行任务... (上次执行: {last_run_date})")
-        else:
-            logger.info("🚀 今日尚未执行，开始运行任务... (首次运行)")
-    except Exception as e:
-        logger.warning(f"读取锁文件失败: {e}，继续执行任务")
-
-def mark_as_done():
-    """
-    标记今日任务已完成
-    将今天的日期写入锁文件
-    """
-    today = get_today_beijing()
-    lock_file_path = SCRIPT_DIR / LOCK_FILE
-    
-    try:
-        with open(lock_file_path, 'w', encoding='utf-8') as f:
-            f.write(today)
-        logger.info(f"✅ 任务完成标记已保存: {today}")
-    except Exception as e:
-        logger.error(f"保存任务完成标记失败: {e}")
-
 def capture_screenshot(page_url: str, filename: str) -> bool:
     """
     使用 Playwright 访问 page_url，点击相机按钮下载截图，保存为 filename。
     返回成功与否。
     """
     logger.info(f"开始抓取截图: {page_url}")
-    browser = None
     try:
         with sync_playwright() as p:
-            # 服务器环境强制使用无头模式
-            headless_mode = IS_SERVER or os.getenv('HEADLESS', 'true').lower() == 'true'
-            
             browser: Browser = p.chromium.launch(
-                headless=headless_mode,
-                args=BROWSER_ARGS
+                headless=True,  # 可视模式便于调试，cron运行时改为 True
+                args=[
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-dev-shm-usage',
+                    '--no-sandbox',
+                ]
             )
-            
             page: Page = browser.new_page(viewport=VIEWPORT)
-            
-            # 设置更长的超时时间
-            page.set_default_timeout(60000)
-            
             logger.info(f"访问页面: {page_url}")
-            page.goto(page_url, timeout=60000, wait_until='networkidle')
-            
+            page.goto(page_url, timeout=60000)
             logger.info("页面加载完成，等待图表渲染...")
             page.wait_for_timeout(WAIT_TIME_MS)
 
-            # 定位下方图表容器（通过时间选择器文本"1d"）
+            # 定位下方图表容器（通过时间选择器文本“1d”）
             all_time_selectors = page.locator(".ant-select-selector")
             target_selector = None
-            
             for i in range(all_time_selectors.count()):
-                try:
-                    txt = all_time_selectors.nth(i).text_content().strip()
-                    if txt == '1d':
-                        target_selector = all_time_selectors.nth(i)
-                        break
-                except Exception as e:
-                    logger.debug(f"检查时间选择器 {i} 时出错: {e}")
-                    continue
-                    
+                txt = all_time_selectors.nth(i).text_content().strip()
+                if txt == '1d':
+                    target_selector = all_time_selectors.nth(i)
+                    break
             if target_selector is None:
-                logger.warning("未找到 '1d' 时间选择器，使用备用策略")
                 if all_time_selectors.count() >= 2:
                     target_selector = all_time_selectors.nth(1)
                 else:
                     target_selector = all_time_selectors.first
-                    
             chart_container = target_selector.locator("..").locator("..")
             logger.info("已定位下方图表容器")
 
@@ -200,17 +144,14 @@ def capture_screenshot(page_url: str, filename: str) -> bool:
             # 根据 URL 判断需要切换的周期
             if '/liq-map/' in page_url and 'heat-map' not in page_url:
                 logger.info("聚合图页面，切换到 1w 周期")
-                try:
-                    target_selector.click()
-                    page.wait_for_timeout(1000)
-                    dropdown_item = page.locator(".ant-select-dropdown .ant-select-item[title='1w']")
-                    if dropdown_item.count() == 0:
-                        dropdown_item = page.locator("text=1w").last
-                    dropdown_item.click()
-                    logger.info("已切换到 1w 周期")
-                    page.wait_for_timeout(8000)
-                except Exception as e:
-                    logger.warning(f"切换时间周期失败: {e}")
+                target_selector.click()
+                page.wait_for_timeout(1000)
+                dropdown_item = page.locator(".ant-select-dropdown .ant-select-item[title='1w']")
+                if dropdown_item.count() == 0:
+                    dropdown_item = page.locator("text=1w").last
+                dropdown_item.click()
+                logger.info("已切换到 1w 周期")
+                page.wait_for_timeout(8000)
             else:
                 logger.info("热图页面，保持 1M 周期，无需切换")
 
@@ -219,7 +160,7 @@ def capture_screenshot(page_url: str, filename: str) -> bool:
             page.wait_for_timeout(2000)
 
             # 点击相机按钮并监听下载
-            with page.expect_download(timeout=30000) as download_info:
+            with page.expect_download() as download_info:
                 camera_button = chart_container.locator(".anticon.anticon-camera")
                 if camera_button.count() > 0:
                     camera_button.click()
@@ -249,35 +190,18 @@ def capture_screenshot(page_url: str, filename: str) -> bool:
 
             download = download_info.value
             logger.info(f"下载开始: {download.suggested_filename}")
-            
-            # 确保文件保存在正确的目录
-            file_path = SCRIPT_DIR / filename
-            download.save_as(str(file_path))
-            logger.info(f"截图已保存为: {file_path}")
-            
+            download.save_as(filename)
+            logger.info(f"截图已保存为: {filename}")
+            browser.close()
             return True
-            
     except Exception as e:
         logger.error(f"抓取截图失败: {e}")
-        # 如果出错，尝试截取页面快照用于调试
+        # 如果出错，尝试截取页面快照
         try:
-            if browser and not browser.is_closed():
-                contexts = browser.contexts
-                if contexts:
-                    pages = contexts[0].pages
-                    if pages:
-                        error_file = SCRIPT_DIR / f"error_{os.path.basename(filename)}.png"
-                        pages[0].screenshot(path=str(error_file))
-                        logger.info(f"错误快照已保存: {error_file}")
-        except Exception as screenshot_error:
-            logger.debug(f"保存错误快照失败: {screenshot_error}")
+            page.screenshot(path=f"error_{os.path.basename(filename)}.png")
+        except:
+            pass
         return False
-    finally:
-        if browser and not browser.is_closed():
-            try:
-                browser.close()
-            except:
-                pass
 
 def scrape_heatmap() -> Optional[str]:
     """
@@ -313,22 +237,14 @@ def upload_to_github(file_path: str, repo_name: str, token: str) -> Optional[str
     try:
         gh = Github(token)
         repo = gh.get_repo(repo_name)
-        
-        # 确保文件存在
-        if not os.path.exists(file_path):
-            logger.error(f"文件不存在: {file_path}")
-            return None
-            
         with open(file_path, 'rb') as f:
             content = f.read()
-            
         # 构造仓库中的路径，按年月组织
         tz = pytz.timezone('Asia/Shanghai')
         now = datetime.datetime.now(tz)
         year_month = now.strftime('%Y-%m')
         filename = os.path.basename(file_path)
         remote_path = f"images/{year_month}/{filename}"
-        
         # 检查文件是否存在，若存在则更新
         try:
             existing = repo.get_contents(remote_path)
@@ -337,27 +253,18 @@ def upload_to_github(file_path: str, repo_name: str, token: str) -> Optional[str
         except:
             repo.create_file(remote_path, f"Add {now.date()}", content)
             logger.info(f"已创建 GitHub 文件: {remote_path}")
-            
         # 生成 raw 链接
         raw_url = f"https://raw.githubusercontent.com/{repo_name}/main/{remote_path}"
         logger.info(f"Raw URL: {raw_url}")
         return raw_url
-        
     except GithubException as e:
         logger.error(f"GitHub 上传失败: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"上传过程中出现未知错误: {e}")
         return None
 
 def get_today_notion_page(notion_token: str, db_id: str) -> Optional[str]:
     """
     查询 Notion 数据库中 isToday 公式属性为 True（即今天）的页面，返回页面 ID。
     """
-    if not notion_token or not db_id:
-        logger.error("Notion Token 或 Database ID 未提供")
-        return None
-        
     try:
         notion = NotionClient(auth=notion_token)
         logger.info("正在查询 isToday 为 True 的页面...")
@@ -383,13 +290,10 @@ def get_today_notion_page(notion_token: str, db_id: str) -> Optional[str]:
     except APIResponseError as e:
         logger.error(f"Notion 查询失败: {e}")
         return None
-    except Exception as e:
-        logger.error(f"Notion 查询过程中出现未知错误: {e}")
-        return None
 
 def update_notion_page(notion_token: str, page_id: str, heatmap_url: str, aggregate_url: str):
     """
-    更新 Notion 页面的"数据图"和"清算地图"属性。
+    更新 Notion 页面的“数据图”和“清算地图”属性。
     """
     try:
         notion = NotionClient(auth=notion_token)
@@ -421,8 +325,6 @@ def update_notion_page(notion_token: str, page_id: str, heatmap_url: str, aggreg
         logger.info(f"Notion 页面更新成功，属性: {list(properties.keys())}")
     except APIResponseError as e:
         logger.error(f"Notion 更新失败: {e}")
-    except Exception as e:
-        logger.error(f"Notion 更新过程中出现未知错误: {e}")
 
 def sync_to_notion(heatmap_url: str, liq_map_url: str) -> bool:
     """
@@ -445,31 +347,8 @@ def sync_to_notion(heatmap_url: str, liq_map_url: str) -> bool:
         logger.error(f"Notion 同步失败: {e}")
         return False
 
-def cleanup_local_files(*file_paths):
-    """清理本地临时文件"""
-    for file_path in file_paths:
-        if file_path and os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-                logger.info(f"已删除本地文件: {file_path}")
-            except Exception as e:
-                logger.warning(f"删除本地文件失败 {file_path}: {e}")
-
 def main():
-    # 防重补跑机制 - 检查今日是否已执行
-    check_if_done_today()
-    
     logger.info("=== CoinAnk 自动抓取脚本开始 ===")
-    
-    # 检查 Playwright 浏览器是否已安装
-    try:
-        with sync_playwright() as p:
-            p.chromium.launch(headless=True)
-        logger.info("Playwright 浏览器检查通过")
-    except Exception as e:
-        logger.error(f"Playwright 浏览器未正确安装: {e}")
-        logger.error("请运行: playwright install chromium")
-        return
 
     # 1. 抓取两个截图
     heatmap_file = scrape_heatmap()
@@ -498,14 +377,13 @@ def main():
         logger.warning("没有可用的图片 URL，跳过 Notion 同步")
 
     # 4. 清理本地临时文件
-    cleanup_local_files(heatmap_file, liq_map_file)
-
-    # 5. 防重补跑机制 - 标记任务完成（仅在 Notion 同步成功时）
-    if sync_success:
-        mark_as_done()
-        logger.info("🎉 今日任务执行成功并已标记完成")
-    else:
-        logger.warning("⚠️ 任务未完全成功，不标记为完成（明天可重试）")
+    for file_path in [heatmap_file, liq_map_file]:
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                logger.info(f"已删除本地文件: {file_path}")
+            except Exception as e:
+                logger.warning(f"删除本地文件失败 {file_path}: {e}")
 
     logger.info("=== 脚本执行完成 ===")
 

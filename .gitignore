@@ -1,26 +1,83 @@
-# 图片文件
+# 环境变量文件
+.env
+.env.local
+.env.*.local
+
+# Python 缓存和编译文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# 虚拟环境
+venv/
+env/
+.venv/
+.env/
+
+# 日志文件
+*.log
+logs/
+run.log
+runtime.log
+
+# 图片文件（如果是生成的图片）
 *.png
 *.jpg
 *.jpeg
 *.gif
+*.bmp
+*.tiff
+images/
 
-# 日志文件
-*.log
-
-# Python 缓存
-__pycache__/
-*.py[cod]
-*$py.class
-
-# 虚拟环境
-.env
-venv/
-env/
-
-# 下载文件
+# 临时文件和下载文件
+*.tmp
+*.temp
 *.download
+*.backup
+*.bak
+
+# 防重补跑锁文件
+daily_task.lock
 
 # 系统文件
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
-.venv/
+
+# IDE 和编辑器文件
+.vscode/settings.json
+.vscode/launch.json
+.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# 配置文件（如果包含敏感信息）
+config.ini
+config.json
+secrets.json
+
+# 测试覆盖率报告
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
