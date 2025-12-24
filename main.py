@@ -455,11 +455,110 @@ def cleanup_local_files(*file_paths):
             except Exception as e:
                 logger.warning(f"删除本地文件失败 {file_path}: {e}")
 
+def cleanup_old_files():
+    """
+    定期清理旧文件：日志、错误截图、临时文件等
+    保留策略：
+    - 日志文件：保留30天
+    - 错误截图：保留7天  
+    - 临时文件：保留1天
+    """
+    logger.info("开始清理旧文件...")
+    
+    import time
+    current_time = time.time()
+    
+    # 清理规则
+    cleanup_rules = [
+        # (文件模式, 保留天数, 描述)
+        ("logs/*.log", 30, "日志文件"),
+        ("*.log", 30, "根目录日志文件"),
+        ("logs/runtime.log.*", 7, "轮转的日志文件"),  # 轮转后的日志文件只保留7天
+        ("error_*.png", 7, "错误截图"),
+        ("debug*.png", 7, "调试截图"),
+        ("explore*.png", 7, "探索截图"),
+        ("*.tmp", 1, "临时文件"),
+        ("*.temp", 1, "临时文件"),
+        ("*_BTC_*.png", 1, "当日截图文件"),  # 截图文件执行完就删除，这里是保险
+        ("container_text.txt", 7, "容器文本文件"),
+        ("page_text.txt", 7, "页面文本文件"),
+    ]
+    
+    total_cleaned = 0
+    total_size = 0
+    
+    for pattern, keep_days, description in cleanup_rules:
+        try:
+            import glob
+            files = glob.glob(pattern)
+            
+            for file_path in files:
+                try:
+                    # 检查文件年龄
+                    file_age_days = (current_time - os.path.getmtime(file_path)) / (24 * 3600)
+                    
+                    if file_age_days > keep_days:
+                        file_size = os.path.getsize(file_path)
+                        os.remove(file_path)
+                        total_cleaned += 1
+                        total_size += file_size
+                        logger.info(f"已清理 {description}: {file_path} (已存在 {file_age_days:.1f} 天)")
+                        
+                except Exception as e:
+                    logger.debug(f"清理文件失败 {file_path}: {e}")
+                    
+        except Exception as e:
+            logger.debug(f"处理模式 {pattern} 时出错: {e}")
+    
+    if total_cleaned > 0:
+        size_mb = total_size / (1024 * 1024)
+        logger.info(f"清理完成：删除了 {total_cleaned} 个文件，释放 {size_mb:.2f} MB 空间")
+    else:
+        logger.info("清理完成：没有需要清理的旧文件")
+
+def rotate_log_if_needed():
+    """
+    日志轮转：如果日志文件过大，进行轮转
+    """
+    log_file = LOG_DIR / 'runtime.log'
+    max_size_mb = 10  # 最大10MB
+    
+    try:
+        if log_file.exists():
+            size_mb = log_file.stat().st_size / (1024 * 1024)
+            
+            if size_mb > max_size_mb:
+                # 轮转日志
+                backup_file = LOG_DIR / f'runtime.log.{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}'
+                log_file.rename(backup_file)
+                logger.info(f"日志轮转：{log_file} -> {backup_file} ({size_mb:.2f}MB)")
+                
+                # 重新配置日志处理器
+                for handler in logger.handlers:
+                    if isinstance(handler, logging.FileHandler):
+                        handler.close()
+                        logger.removeHandler(handler)
+                
+                # 添加新的文件处理器
+                new_handler = logging.FileHandler(log_file, encoding='utf-8')
+                new_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+                logger.addHandler(new_handler)
+                
+    except Exception as e:
+        logger.debug(f"日志轮转失败: {e}")
+
 def main():
     # 防重补跑机制 - 检查今日是否已执行
     check_if_done_today()
     
     logger.info("=== CoinAnk 自动抓取脚本开始 ===")
+    
+    # 定期清理（每次运行时检查）
+    try:
+        cleanup_old_files()
+        rotate_log_if_needed()
+    except Exception as e:
+        logger.warning(f"清理过程中出现错误: {e}")
     
     # 检查 Playwright 浏览器是否已安装
     try:
