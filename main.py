@@ -50,9 +50,6 @@ from config import (
 # 切换到脚本目录
 os.chdir(SCRIPT_DIR)
 
-# 加载 .env 文件
-load_dotenv(SCRIPT_DIR / '.env')
-
 # 创建日志目录
 LOG_DIR.mkdir(exist_ok=True)
 

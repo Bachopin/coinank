@@ -6,6 +6,7 @@ CoinAnk 脚本配置文件
 
 import os
 from pathlib import Path
+from dotenv import load_dotenv
 
 # ============================================================
 # 路径配置
@@ -13,6 +14,9 @@ from pathlib import Path
 
 # 脚本所在目录
 SCRIPT_DIR = Path(__file__).parent.absolute()
+
+# 加载 .env 文件（必须在读取环境变量之前）
+load_dotenv(SCRIPT_DIR / '.env')
 
 # 日志目录
 LOG_DIR = SCRIPT_DIR / 'logs'
