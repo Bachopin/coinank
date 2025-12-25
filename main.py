@@ -643,12 +643,12 @@ def _run_main_task():
     # 4. 清理本地临时文件
     cleanup_local_files(heatmap_file, liq_map_file)
 
-    # 5. 清理 GitHub 旧图片
-    if sync_success and GITHUB_TOKEN:
-        try:
-            cleanup_old_github_images()
-        except Exception as e:
-            logger.warning(f"GitHub 图片清理失败: {e}")
+    # 5. GitHub 图片清理已禁用（因为 Notion 引用了这些图片链接）
+    # if sync_success and GITHUB_TOKEN:
+    #     try:
+    #         cleanup_old_github_images()
+    #     except Exception as e:
+    #         logger.warning(f"GitHub 图片清理失败: {e}")
 
     # 6. 标记任务完成
     if sync_success:
