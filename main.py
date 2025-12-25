@@ -2,6 +2,15 @@
 """
 CoinAnk 比特币清算热力图 + 聚合图抓取脚本（Mac 本地版 + 防重补跑机制）
 抓取两个截图并上传到 GitHub，然后更新 Notion 页面。
+
+功能特性：
+- 自动抓取 CoinAnk 清算热力图和聚合清算图
+- 上传到 GitHub 仓库并生成 raw 链接
+- 同步图片链接到 Notion 数据库
+- 防重复执行机制（每日只执行一次）
+- 自动清理超过30天的 GitHub 旧图片
+- 本地文件和日志自动清理
+- 失败重试机制
 """
 
 import logging
@@ -9,12 +18,14 @@ import os
 import datetime
 import sys
 import platform
+import time
+import re
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 import pytz
-from playwright.sync_api import sync_playwright, Browser, Page
-from github import Github, GithubException
+from playwright.sync_api import sync_playwright, Browser, Page, TimeoutError as PlaywrightTimeout
+from github import Github, GithubException, Auth
 from notion_client import Client as NotionClient
 from notion_client.errors import APIResponseError
 from dotenv import load_dotenv
@@ -74,6 +85,9 @@ HEATMAP_URL = "https://coinank.com/zh/chart/derivatives/liq-heat-map/btcusdt/1M"
 AGGREGATE_URL = "https://coinank.com/zh/chart/derivatives/liq-map/binance/btcusdt/1w"
 VIEWPORT = {'width': 1920, 'height': 1200}
 WAIT_TIME_MS = 15000  # 15秒
+
+# GitHub 图片保留天数
+GITHUB_IMAGE_RETENTION_DAYS = 30
 
 # 浏览器配置 - 服务器优化
 BROWSER_ARGS = [
@@ -151,23 +165,40 @@ def capture_screenshot(page_url: str, filename: str) -> bool:
     """
     logger.info(f"开始抓取截图: {page_url}")
     browser = None
+    context = None
+    page = None
+    
     try:
         with sync_playwright() as p:
             # 服务器环境强制使用无头模式
             headless_mode = IS_SERVER or os.getenv('HEADLESS', 'true').lower() == 'true'
             
-            browser: Browser = p.chromium.launch(
+            browser = p.chromium.launch(
                 headless=headless_mode,
                 args=BROWSER_ARGS
             )
             
-            page: Page = browser.new_page(viewport=VIEWPORT)
+            context = browser.new_context(
+                viewport=VIEWPORT,
+                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            )
+            page = context.new_page()
             
             # 设置更长的超时时间
-            page.set_default_timeout(60000)
+            page.set_default_timeout(90000)
             
             logger.info(f"访问页面: {page_url}")
-            page.goto(page_url, timeout=60000, wait_until='networkidle')
+            # 使用 domcontentloaded 而不是 networkidle，避免等待所有网络请求
+            try:
+                page.goto(page_url, timeout=90000, wait_until='domcontentloaded')
+            except PlaywrightTimeout:
+                logger.warning("页面加载超时，尝试继续执行...")
+            
+            # 等待页面基本加载完成
+            try:
+                page.wait_for_load_state('load', timeout=30000)
+            except PlaywrightTimeout:
+                logger.warning("等待 load 状态超时，继续执行...")
             
             logger.info("页面加载完成，等待图表渲染...")
             page.wait_for_timeout(WAIT_TIME_MS)
@@ -176,10 +207,17 @@ def capture_screenshot(page_url: str, filename: str) -> bool:
             all_time_selectors = page.locator(".ant-select-selector")
             target_selector = None
             
-            for i in range(all_time_selectors.count()):
+            # 等待选择器出现
+            try:
+                all_time_selectors.first.wait_for(timeout=10000)
+            except PlaywrightTimeout:
+                logger.warning("等待时间选择器超时")
+            
+            selector_count = all_time_selectors.count()
+            for i in range(selector_count):
                 try:
-                    txt = all_time_selectors.nth(i).text_content().strip()
-                    if txt == '1d':
+                    txt = all_time_selectors.nth(i).text_content(timeout=5000)
+                    if txt and txt.strip() == '1d':
                         target_selector = all_time_selectors.nth(i)
                         break
                 except Exception as e:
@@ -188,10 +226,12 @@ def capture_screenshot(page_url: str, filename: str) -> bool:
                     
             if target_selector is None:
                 logger.warning("未找到 '1d' 时间选择器，使用备用策略")
-                if all_time_selectors.count() >= 2:
+                if selector_count >= 2:
                     target_selector = all_time_selectors.nth(1)
-                else:
+                elif selector_count >= 1:
                     target_selector = all_time_selectors.first
+                else:
+                    raise Exception("未找到任何时间选择器，页面可能未正确加载")
                     
             chart_container = target_selector.locator("..").locator("..")
             logger.info("已定位下方图表容器")
@@ -253,31 +293,77 @@ def capture_screenshot(page_url: str, filename: str) -> bool:
             # 确保文件保存在正确的目录
             file_path = SCRIPT_DIR / filename
             download.save_as(str(file_path))
-            logger.info(f"截图已保存为: {file_path}")
+            
+            # 验证文件是否成功保存
+            if not file_path.exists():
+                raise Exception(f"文件保存失败: {file_path}")
+            
+            file_size = file_path.stat().st_size
+            if file_size < 1000:  # 小于1KB可能是空文件或错误
+                raise Exception(f"文件大小异常: {file_size} bytes")
+                
+            logger.info(f"截图已保存为: {file_path} ({file_size / 1024:.1f} KB)")
             
             return True
             
+    except PlaywrightTimeout as e:
+        logger.error(f"Playwright 超时: {e}")
+        _save_error_screenshot(page, filename)
+        return False
     except Exception as e:
         logger.error(f"抓取截图失败: {e}")
-        # 如果出错，尝试截取页面快照用于调试
-        try:
-            if browser and not browser.is_closed():
-                contexts = browser.contexts
-                if contexts:
-                    pages = contexts[0].pages
-                    if pages:
-                        error_file = SCRIPT_DIR / f"error_{os.path.basename(filename)}.png"
-                        pages[0].screenshot(path=str(error_file))
-                        logger.info(f"错误快照已保存: {error_file}")
-        except Exception as screenshot_error:
-            logger.debug(f"保存错误快照失败: {screenshot_error}")
+        _save_error_screenshot(page, filename)
         return False
     finally:
-        if browser and not browser.is_closed():
-            try:
+        try:
+            if context:
+                context.close()
+            if browser:
                 browser.close()
-            except:
-                pass
+        except Exception:
+            pass
+
+
+def _save_error_screenshot(page: Optional[Page], filename: str):
+    """保存错误时的页面截图用于调试"""
+    if not page:
+        return
+    try:
+        error_file = SCRIPT_DIR / f"error_{os.path.basename(filename)}"
+        page.screenshot(path=str(error_file))
+        logger.info(f"错误快照已保存: {error_file}")
+    except Exception as e:
+        logger.debug(f"保存错误快照失败: {e}")
+
+def capture_screenshot_with_retry(page_url: str, filename: str, max_retries: int = 3) -> bool:
+    """
+    带重试机制的截图抓取
+    
+    Args:
+        page_url: 要抓取的页面 URL
+        filename: 保存的文件名
+        max_retries: 最大重试次数
+        
+    Returns:
+        是否成功
+    """
+    last_error = None
+    for attempt in range(max_retries):
+        if attempt > 0:
+            wait_time = 5 * (attempt + 1)  # 递增等待时间：10秒、15秒
+            logger.info(f"第 {attempt + 1} 次重试，等待 {wait_time} 秒...")
+            time.sleep(wait_time)
+        
+        try:
+            if capture_screenshot(page_url, filename):
+                return True
+        except Exception as e:
+            last_error = e
+            logger.warning(f"第 {attempt + 1} 次尝试失败: {e}")
+    
+    logger.error(f"截图抓取失败，已重试 {max_retries} 次。最后错误: {last_error}")
+    return False
+
 
 def scrape_heatmap() -> Optional[str]:
     """
@@ -285,7 +371,7 @@ def scrape_heatmap() -> Optional[str]:
     """
     today = get_today_beijing()
     filename = f"{today}_BTC_清算热力图_1M.png"
-    success = capture_screenshot(HEATMAP_URL, filename)
+    success = capture_screenshot_with_retry(HEATMAP_URL, filename)
     if success:
         return filename
     else:
@@ -297,7 +383,7 @@ def scrape_liquidation_map() -> Optional[str]:
     """
     today = get_today_beijing()
     filename = f"{today}_BTC_全网聚合清算_1W.png"
-    success = capture_screenshot(AGGREGATE_URL, filename)
+    success = capture_screenshot_with_retry(AGGREGATE_URL, filename)
     if success:
         return filename
     else:
@@ -311,7 +397,9 @@ def upload_to_github(file_path: str, repo_name: str, token: str) -> Optional[str
         logger.error("GitHub Token 未提供，跳过上传")
         return None
     try:
-        gh = Github(token)
+        # 使用新的认证方式，避免 DeprecationWarning
+        auth = Auth.Token(token)
+        gh = Github(auth=auth)
         repo = gh.get_repo(repo_name)
         
         # 确保文件存在
@@ -334,9 +422,12 @@ def upload_to_github(file_path: str, repo_name: str, token: str) -> Optional[str
             existing = repo.get_contents(remote_path)
             repo.update_file(remote_path, f"Update {now.date()}", content, existing.sha)
             logger.info(f"已更新 GitHub 文件: {remote_path}")
-        except:
-            repo.create_file(remote_path, f"Add {now.date()}", content)
-            logger.info(f"已创建 GitHub 文件: {remote_path}")
+        except GithubException as e:
+            if e.status == 404:
+                repo.create_file(remote_path, f"Add {now.date()}", content)
+                logger.info(f"已创建 GitHub 文件: {remote_path}")
+            else:
+                raise
             
         # 生成 raw 链接
         raw_url = f"https://raw.githubusercontent.com/{repo_name}/main/{remote_path}"
@@ -349,6 +440,122 @@ def upload_to_github(file_path: str, repo_name: str, token: str) -> Optional[str
     except Exception as e:
         logger.error(f"上传过程中出现未知错误: {e}")
         return None
+
+
+def cleanup_old_github_images(repo_name: str, token: str, retention_days: int = 30) -> int:
+    """
+    清理 GitHub 仓库中超过指定天数的旧图片。
+    
+    Args:
+        repo_name: GitHub 仓库名称
+        token: GitHub Token
+        retention_days: 保留天数，默认30天
+        
+    Returns:
+        删除的文件数量
+    """
+    if not token:
+        logger.warning("GitHub Token 未提供，跳过清理")
+        return 0
+        
+    try:
+        auth = Auth.Token(token)
+        gh = Github(auth=auth)
+        repo = gh.get_repo(repo_name)
+        
+        tz = pytz.timezone('Asia/Shanghai')
+        now = datetime.datetime.now(tz)
+        cutoff_date = now - datetime.timedelta(days=retention_days)
+        
+        deleted_count = 0
+        
+        # 获取 images 目录下的所有子目录（按年月组织）
+        try:
+            contents = repo.get_contents("images")
+        except GithubException as e:
+            if e.status == 404:
+                logger.info("images 目录不存在，无需清理")
+                return 0
+            raise
+            
+        for item in contents:
+            if item.type != "dir":
+                continue
+                
+            # 解析目录名（格式：YYYY-MM）
+            dir_name = item.name
+            try:
+                dir_date = datetime.datetime.strptime(dir_name, '%Y-%m')
+                dir_date = tz.localize(dir_date)
+            except ValueError:
+                logger.debug(f"跳过非日期格式目录: {dir_name}")
+                continue
+            
+            # 如果整个月份都超过保留期，删除整个目录
+            # 计算该月最后一天
+            if dir_date.month == 12:
+                next_month = dir_date.replace(year=dir_date.year + 1, month=1, day=1)
+            else:
+                next_month = dir_date.replace(month=dir_date.month + 1, day=1)
+            last_day_of_month = next_month - datetime.timedelta(days=1)
+            
+            if last_day_of_month < cutoff_date:
+                # 整个月份都过期了，删除目录下所有文件
+                try:
+                    dir_contents = repo.get_contents(f"images/{dir_name}")
+                    for file_item in dir_contents:
+                        if file_item.type == "file":
+                            repo.delete_file(
+                                file_item.path,
+                                f"Auto cleanup: remove old image {file_item.name}",
+                                file_item.sha
+                            )
+                            deleted_count += 1
+                            logger.info(f"已删除过期图片: {file_item.path}")
+                except GithubException as e:
+                    logger.warning(f"删除目录 {dir_name} 中的文件失败: {e}")
+            else:
+                # 检查目录内的单个文件
+                try:
+                    dir_contents = repo.get_contents(f"images/{dir_name}")
+                    for file_item in dir_contents:
+                        if file_item.type != "file":
+                            continue
+                        
+                        # 从文件名解析日期（格式：YYYY-MM-DD_...）
+                        filename = file_item.name
+                        date_match = re.match(r'^(\d{4}-\d{2}-\d{2})_', filename)
+                        if date_match:
+                            try:
+                                file_date = datetime.datetime.strptime(date_match.group(1), '%Y-%m-%d')
+                                file_date = tz.localize(file_date)
+                                
+                                if file_date < cutoff_date:
+                                    repo.delete_file(
+                                        file_item.path,
+                                        f"Auto cleanup: remove old image {filename}",
+                                        file_item.sha
+                                    )
+                                    deleted_count += 1
+                                    logger.info(f"已删除过期图片: {file_item.path}")
+                            except ValueError:
+                                pass
+                except GithubException as e:
+                    logger.warning(f"处理目录 {dir_name} 失败: {e}")
+        
+        if deleted_count > 0:
+            logger.info(f"GitHub 图片清理完成：删除了 {deleted_count} 个过期文件")
+        else:
+            logger.info("GitHub 图片清理完成：没有需要删除的过期文件")
+            
+        return deleted_count
+        
+    except GithubException as e:
+        logger.error(f"GitHub 清理失败: {e}")
+        return 0
+    except Exception as e:
+        logger.error(f"GitHub 清理过程中出现未知错误: {e}")
+        return 0
 
 def get_today_notion_page(notion_token: str, db_id: str) -> Optional[str]:
     """
@@ -548,22 +755,24 @@ def rotate_log_if_needed():
         logger.debug(f"日志轮转失败: {e}")
 
 def main():
+    """主函数"""
     # 防重补跑机制 - 检查今日是否已执行
     check_if_done_today()
     
     logger.info("=== CoinAnk 自动抓取脚本开始 ===")
     
-    # 定期清理（每次运行时检查）
+    # 定期清理本地文件（每次运行时检查）
     try:
         cleanup_old_files()
         rotate_log_if_needed()
     except Exception as e:
-        logger.warning(f"清理过程中出现错误: {e}")
+        logger.warning(f"本地清理过程中出现错误: {e}")
     
     # 检查 Playwright 浏览器是否已安装
     try:
         with sync_playwright() as p:
-            p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=True)
+            browser.close()
         logger.info("Playwright 浏览器检查通过")
     except Exception as e:
         logger.error(f"Playwright 浏览器未正确安装: {e}")
@@ -599,12 +808,19 @@ def main():
     # 4. 清理本地临时文件
     cleanup_local_files(heatmap_file, liq_map_file)
 
-    # 5. 防重补跑机制 - 标记任务完成（仅在 Notion 同步成功时）
+    # 5. 清理 GitHub 上的旧图片（每次成功执行后清理）
+    if sync_success and GITHUB_TOKEN:
+        try:
+            cleanup_old_github_images(GITHUB_REPO, GITHUB_TOKEN, GITHUB_IMAGE_RETENTION_DAYS)
+        except Exception as e:
+            logger.warning(f"GitHub 图片清理失败: {e}")
+
+    # 6. 防重补跑机制 - 标记任务完成（仅在 Notion 同步成功时）
     if sync_success:
         mark_as_done()
         logger.info("🎉 今日任务执行成功并已标记完成")
     else:
-        logger.warning("⚠️ 任务未完全成功，不标记为完成（明天可重试）")
+        logger.warning("⚠️ 任务未完全成功，不标记为完成（下次运行可重试）")
 
     logger.info("=== 脚本执行完成 ===")
 
