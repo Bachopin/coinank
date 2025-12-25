@@ -20,6 +20,8 @@ import sys
 import platform
 import time
 import re
+import glob
+import signal
 from pathlib import Path
 from typing import Optional, Tuple, List
 
@@ -88,6 +90,9 @@ WAIT_TIME_MS = 15000  # 15秒
 
 # GitHub 图片保留天数
 GITHUB_IMAGE_RETENTION_DAYS = 30
+
+# 全局超时时间（秒）- 防止脚本卡死
+GLOBAL_TIMEOUT_SECONDS = 600  # 10分钟
 
 # 浏览器配置 - 服务器优化
 BROWSER_ARGS = [
@@ -672,7 +677,7 @@ def cleanup_old_files():
     """
     logger.info("开始清理旧文件...")
     
-    import time
+    import glob
     current_time = time.time()
     
     # 清理规则
@@ -696,7 +701,6 @@ def cleanup_old_files():
     
     for pattern, keep_days, description in cleanup_rules:
         try:
-            import glob
             files = glob.glob(pattern)
             
             for file_path in files:
@@ -756,6 +760,25 @@ def rotate_log_if_needed():
 
 def main():
     """主函数"""
+    # 设置全局超时保护（仅在 Unix 系统上有效）
+    if platform.system() != 'Windows':
+        def timeout_handler(signum, frame):
+            logger.error(f"⚠️ 脚本执行超时（{GLOBAL_TIMEOUT_SECONDS}秒），强制退出")
+            sys.exit(1)
+        
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(GLOBAL_TIMEOUT_SECONDS)
+    
+    try:
+        _run_main_task()
+    finally:
+        # 取消超时
+        if platform.system() != 'Windows':
+            signal.alarm(0)
+
+
+def _run_main_task():
+    """实际的主任务逻辑"""
     # 防重补跑机制 - 检查今日是否已执行
     check_if_done_today()
     
