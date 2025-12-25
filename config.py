@@ -91,7 +91,10 @@ RETRY_WAIT_BASE_SECONDS = 5
 # 清理配置
 # ============================================================
 
-# GitHub 图片保留天数
+# 是否启用 GitHub 图片清理（注意：Notion 引用了这些图片，清理后链接会失效）
+ENABLE_GITHUB_CLEANUP = False
+
+# GitHub 图片保留天数（仅在启用清理时生效）
 GITHUB_IMAGE_RETENTION_DAYS = 30
 
 # 本地日志保留天数
