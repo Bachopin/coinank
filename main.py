@@ -221,6 +221,47 @@ def capture_screenshot(page_url: str, filename: str) -> bool:
             page.evaluate("window.scrollTo(0, document.body.scrollHeight / 3)")
             page.wait_for_timeout(2000)
 
+            # 处理登录遮罩层（如果存在）
+            try:
+                login_mask = page.locator(".login-mask")
+                if login_mask.count() > 0:
+                    logger.info("检测到登录遮罩层，尝试移除...")
+                    # 方法1: 通过 JavaScript 移除遮罩层
+                    page.evaluate("""
+                        () => {
+                            const masks = document.querySelectorAll('.login-mask');
+                            masks.forEach(mask => {
+                                mask.style.display = 'none';
+                                mask.style.visibility = 'hidden';
+                                mask.style.opacity = '0';
+                                mask.style.pointerEvents = 'none';
+                            });
+                        }
+                    """)
+                    page.wait_for_timeout(1000)
+                    
+                    # 方法2: 尝试点击遮罩层上的关闭按钮（如果有）
+                    close_buttons = page.locator(".login-mask [class*='close'], .login-mask [class*='cancel'], .login-mask .anticon-close")
+                    if close_buttons.count() > 0:
+                        close_buttons.first.click()
+                        logger.info("已点击遮罩层关闭按钮")
+                        page.wait_for_timeout(1000)
+                    
+                    # 验证遮罩层是否已移除
+                    if login_mask.count() > 0:
+                        # 强制移除
+                        page.evaluate("""
+                            () => {
+                                const masks = document.querySelectorAll('.login-mask');
+                                masks.forEach(mask => mask.remove());
+                            }
+                        """)
+                        logger.info("已强制移除登录遮罩层")
+                    else:
+                        logger.info("登录遮罩层已成功移除")
+            except Exception as e:
+                logger.warning(f"处理登录遮罩层时出错（继续执行）: {e}")
+
             # 点击相机按钮下载截图
             with page.expect_download(timeout=DOWNLOAD_TIMEOUT_MS) as download_info:
                 camera_button = chart_container.locator(CAMERA_BUTTON_SELECTOR)
