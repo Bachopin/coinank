@@ -15,28 +15,83 @@ CoinAnk 比特币清算热力图 + 聚合图自动抓取脚本 v1.0
 
 __version__ = "1.0.0"
 
-import logging
+# ============================================================
+# 第一步：最轻量级的导入和检查（避免不必要的库加载）
+# ============================================================
 import os
 import sys
+import datetime
+from pathlib import Path
+
+# 必要的轻量级导入
+import pytz
+from dotenv import load_dotenv
+
+# 脚本所在目录
+SCRIPT_DIR = Path(__file__).parent.absolute()
+
+# 加载 .env 文件
+load_dotenv(SCRIPT_DIR / '.env')
+
+# 日志目录和锁文件
+LOG_DIR = SCRIPT_DIR / 'logs'
+LOCK_FILE = "daily_task.lock"
+
+# 切换到脚本目录并创建日志目录
+os.chdir(SCRIPT_DIR)
+LOG_DIR.mkdir(exist_ok=True)
+
+
+def get_today_beijing() -> str:
+    """返回北京时间的今日日期字符串 YYYY-MM-DD"""
+    tz = pytz.timezone('Asia/Shanghai')
+    return datetime.datetime.now(tz).strftime('%Y-%m-%d')
+
+
+def check_if_done_today_early():
+    """
+    早期检查：在导入重量级库之前就检查今日任务是否已完成
+    如果已完成，直接退出，避免加载 Playwright、GitHub、Notion 等重库
+    """
+    today = get_today_beijing()
+    lock_file_path = SCRIPT_DIR / LOCK_FILE
+    
+    try:
+        if lock_file_path.exists():
+            last_run_date = lock_file_path.read_text(encoding='utf-8').strip()
+            if last_run_date == today:
+                # 任务已完成，无需加载重量级库，直接退出
+                print(f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - INFO - ✅ 今日任务已完成，无需重复执行")
+                sys.exit(0)
+    except Exception:
+        # 如果检查失败，继续执行（后续会再次检查）
+        pass
+
+
+# ============================================================
+# 执行早期检查（如果今天已完成，这里就会退出，不会加载后续重库）
+# ============================================================
+check_if_done_today_early()
+
+
+# ============================================================
+# 第二步：只有任务未完成时，才导入重量级库
+# ============================================================
+import logging
 import platform
 import time
 import re
 import glob
 import signal
-import datetime
-from pathlib import Path
 from typing import Optional
 
-import pytz
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeout
 from github import Github, GithubException, Auth
 from notion_client import Client as NotionClient
 from notion_client.errors import APIResponseError
-from dotenv import load_dotenv
 
 # 加载配置
 from config import (
-    SCRIPT_DIR, LOG_DIR, LOCK_FILE,
     HEATMAP_URL, AGGREGATE_URL,
     VIEWPORT, WAIT_TIME_MS, PAGE_TIMEOUT_MS, DOWNLOAD_TIMEOUT_MS,
     BROWSER_ARGS, SERVER_BROWSER_ARGS, USER_AGENT, CAMERA_BUTTON_SELECTOR,
@@ -47,12 +102,6 @@ from config import (
     GLOBAL_TIMEOUT_SECONDS,
     GITHUB_TOKEN, GITHUB_REPO, NOTION_TOKEN, NOTION_DB_ID, HEADLESS,
 )
-
-# 切换到脚本目录
-os.chdir(SCRIPT_DIR)
-
-# 创建日志目录
-LOG_DIR.mkdir(exist_ok=True)
 
 # 检测运行环境
 IS_SERVER = platform.system() == 'Linux' or os.getenv('DISPLAY') is None
@@ -86,14 +135,8 @@ else:
     logger.info("所有必要的环境变量已配置")
 
 
-def get_today_beijing() -> str:
-    """返回北京时间的今日日期字符串 YYYY-MM-DD"""
-    tz = pytz.timezone('Asia/Shanghai')
-    return datetime.datetime.now(tz).strftime('%Y-%m-%d')
-
-
 def check_if_done_today():
-    """检查今日任务是否已完成，如果已完成则退出"""
+    """检查今日任务是否已完成，如果已完成则退出（二次检查，带日志）"""
     today = get_today_beijing()
     lock_file_path = SCRIPT_DIR / LOCK_FILE
     
