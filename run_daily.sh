@@ -26,15 +26,32 @@ fi
 # 创建日志目录
 mkdir -p logs
 
-# 记录运行开始时间
-echo "=== 开始运行 $(date '+%Y-%m-%d %H:%M:%S') ===" >> logs/run.log
+RUN_LOG="logs/run.log"
+TEMP_OUTPUT_FILE=$(mktemp)
 
-# 运行 Python 脚本，将 stdout 和 stderr 追加到 run.log
-python3 main.py >> logs/run.log 2>&1
-EXIT_CODE=$?
+cleanup_temp_file() {
+    rm -f "$TEMP_OUTPUT_FILE"
+}
+
+trap cleanup_temp_file EXIT
+
+# 记录运行开始时间
+echo "=== 开始运行 $(date '+%Y-%m-%d %H:%M:%S') ===" >> "$RUN_LOG"
+
+# 运行 Python 脚本：成功时只保留简短记录，失败时把详细输出写入 run.log
+if python3 main.py > "$TEMP_OUTPUT_FILE" 2>&1; then
+    EXIT_CODE=0
+else
+    EXIT_CODE=$?
+    {
+        echo "--- 详细输出开始 ---"
+        cat "$TEMP_OUTPUT_FILE"
+        echo "--- 详细输出结束 ---"
+    } >> "$RUN_LOG"
+fi
 
 # 记录运行结束时间
-echo "=== 运行结束 $(date '+%Y-%m-%d %H:%M:%S')，退出码: $EXIT_CODE ===" >> logs/run.log
+echo "=== 运行结束 $(date '+%Y-%m-%d %H:%M:%S')，退出码: $EXIT_CODE ===" >> "$RUN_LOG"
 
 # 如果出错，可在此添加通知（如发送邮件）
 if [ $EXIT_CODE -ne 0 ]; then
